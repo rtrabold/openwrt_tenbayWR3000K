@@ -20,7 +20,6 @@ DEVICE_TYPE?=router
 ##
 DEFAULT_PACKAGES:=\
 	base-files \
-	ca-bundle \
 	dropbear \
 	fstools \
 	libc \
@@ -53,7 +52,6 @@ DEFAULT_PACKAGES.router:=\
 	dnsmasq \
 	firewall4 \
 	nftables \
-	kmod-nft-offload \
 	odhcp6c \
 	odhcpd-ipv6only \
 	ppp \

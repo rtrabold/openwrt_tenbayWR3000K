@@ -5,6 +5,7 @@
 
 # 'kernel' partition or UBI volume on NAND contains the kernel
 CI_KERNPART="${CI_KERNPART:-kernel}"
+CI_KERNPART_EXT="${CI_KERNPART_EXT}"
 
 # 'ubi' partition on NAND contains UBI
 # There are also CI_KERN_UBIPART and CI_ROOT_UBIPART if kernel
@@ -213,9 +214,9 @@ nand_upgrade_prepare_ubi() {
 	[ "$data_ubivol" ] && { nand_remove_ubiblock $data_ubivol || return 1; }
 
 	# kill volumes
-	[ "$kern_ubivol" ] && ubirmvol /dev/$kern_ubidev -N "$CI_KERNPART" || :
-	[ "$root_ubivol" ] && ubirmvol /dev/$root_ubidev -N "$CI_ROOTPART" || :
 	[ "$data_ubivol" ] && ubirmvol /dev/$root_ubidev -N rootfs_data || :
+	[ "$root_ubivol" ] && ubirmvol /dev/$root_ubidev -N "$CI_ROOTPART" || :
+	[ "$kern_ubivol" ] && ubirmvol /dev/$kern_ubidev -N "$CI_KERNPART" || :
 
 	# create kernel vol
 	if [ -n "$kernel_length" ]; then
@@ -307,11 +308,12 @@ nand_upgrade_tar() {
 	local board_dir="$($cmd < "$tar_file" | tar tf - | grep -m 1 '^sysupgrade-.*/$')"
 	board_dir="${board_dir%/}"
 
-	local kernel_mtd kernel_length
+	local kernel_mtd kernel_mtd_ext kernel_length
 	if [ "$CI_KERNPART" != "none" ]; then
 		kernel_mtd="$(find_mtd_index "$CI_KERNPART")"
 		kernel_length=$( ($cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | wc -c) 2> /dev/null)
 		[ "$kernel_length" = 0 ] && kernel_length=
+		test -n "$CI_KERNPART_EXT" && kernel_mtd_ext="$(find_mtd_index "$CI_KERNPART_EXT")"
 	fi
 	local rootfs_length=$( ($cmd < "$tar_file" | tar xOf - "$board_dir/root" | wc -c) 2> /dev/null)
 	[ "$rootfs_length" = 0 ] && rootfs_length=
@@ -326,6 +328,9 @@ nand_upgrade_tar() {
 			# Hence only invalidate kernel for now.
 			dd if=/dev/zero bs=4096 count=1 2> /dev/null | \
 				mtd write - "$CI_KERNPART"
+			test -n "$CI_KERNPART_EXT" && \
+			dd if=/dev/zero bs=4096 count=1 2> /dev/null | \
+				mtd write - "$CI_KERNPART_EXT"
 		else
 			ubi_kernel_length="$kernel_length"
 		fi
@@ -346,9 +351,15 @@ nand_upgrade_tar() {
 				flash_erase -j "/dev/mtd${kernel_mtd}" 0 0
 				$cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | \
 					nandwrite "/dev/mtd${kernel_mtd}" -
+				test -n "$CI_KERNPART_EXT" && \
+				tar xO${gz}f "$tar_file" "$board_dir/kernel" | \
+					nandwrite "/dev/mtd${kernel_mtd_ext}" -
 			else
 				$cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | \
 					mtd write - "$CI_KERNPART"
+				test -n "$CI_KERNPART_EXT" && \
+				tar xO${gz}f "$tar_file" "$board_dir/kernel" | \
+					mtd write - "$CI_KERNPART_EXT"
 			fi
 		else
 			local ubidev="$( nand_find_ubi "${CI_KERN_UBIPART:-$CI_UBIPART}" )"
@@ -417,6 +428,35 @@ nand_do_flash_file() {
 
 nand_do_restore_config() {
 	local conf_tar="/tmp/sysupgrade.tgz"
+	overlay_dev=$(cat /.extroot-erase-ext4fs 2>/dev/null)
+	if test -b "$overlay_dev"; then
+		if [ -f "$conf_tar" ]; then
+			mkdir -p /mnt
+			if mount -t ext4 -o rw,noatime "$overlay_dev" /mnt; then
+				cp -af "$conf_tar" "/mnt/sysupgrade.tgz"
+				umount /mnt
+			fi
+		fi
+		echo erase >"$overlay_dev"
+		sync
+	fi
+	overlay_dev=$(cat /.extroot-erase-ubifs 2>/dev/null)
+	if test -n "$overlay_dev"; then
+		ubidev=${overlay_dev#/dev/}
+		ubidev=${ubidev%_*}
+		ubi_mknod /sys/class/ubi/$ubidev
+		ubivol=$(nand_find_volume $ubidev extroot_overlay)
+		overlay_dev=/dev/$ubivol
+		if test -e "$overlay_dev"; then
+			if mount -t ubifs -o rw,noatime "$overlay_dev" /mnt; then
+				touch /mnt/.extroot-erase
+				if [ -f "$conf_tar" ]; then
+					cp -af "$conf_tar" "/mnt/sysupgrade.tgz"
+				fi
+				umount /mnt
+			fi
+		fi
+	fi
 	[ ! -f "$conf_tar" ] || nand_restore_config "$conf_tar"
 }
 

@@ -60,6 +60,65 @@ xiaomi_initial_setup()
 	esac
 }
 
+tenbay_mmc_do_upgrade_dual_boot()
+{
+	local tar_file="$1"
+	local kernel_dev=
+	local rootfs_dev=
+	local current_sys=0
+
+	CI_KERNPART=kernel
+	CI_ROOTPART=rootfs
+
+	if cat /proc/device-tree/chosen/bootargs-append | grep -q sys=1; then
+		current_sys=1
+	fi
+
+	if [ "$current_sys" = "1" ]; then
+		rootfs_dev=$(blkid -t "PARTLABEL=rootfs" -o device)
+		kernel_dev=$(blkid -t "PARTLABEL=kernel" -o device)
+		CI_KERNPART=kernel
+		CI_ROOTPART=rootfs
+	else
+		rootfs_dev=$(blkid -t "PARTLABEL=rootfs_1" -o device)
+		kernel_dev=$(blkid -t "PARTLABEL=kernel_1" -o device)
+		CI_KERNPART=kernel_1
+		CI_ROOTPART=rootfs_1
+	fi
+
+	[ -z "${rootfs_dev}" ] && return 1
+	[ -z "${kernel_dev}" ] && return 1
+	fw_printenv env_init &>/dev/null || {
+		v "Failed to fetch env, please check /etc/fw_env.config"
+		return 1
+	}
+
+	#Switch sys to boot
+	if [ "$current_sys" = "1" ]; then
+		fw_setenv bootargs "console=ttyS0,115200n1 loglevel=8 earlycon=uart8250,mmio32,0x11002000 root=PARTLABEL=rootfs rootfstype=squashfs,f2fs"
+	else
+		fw_setenv bootargs "console=ttyS0,115200n1 loglevel=8 earlycon=uart8250,mmio32,0x11002000 root=PARTLABEL=rootfs_1 rootfstype=squashfs,f2fs"
+	fi
+	sync
+
+	rootdev="${rootfs_dev##*/}"
+	rootdev="${rootdev%p[0-9]*}"
+	CI_ROOTDEV=${rootdev}
+	emmc_do_upgrade "${tar_file}"
+}
+
+tenbay_dualboot_fixup()
+{
+	[ "$(rootfs_type)" = "tmpfs" ] || return 0
+
+	if ! fw_printenv -n boot_from &>/dev/null; then
+		echo "unable to read uboot-env"
+		return 1
+	fi
+
+	fw_setenv boot_from ubi
+}
+
 platform_do_upgrade() {
 	local board=$(board_name)
 
@@ -115,6 +174,7 @@ platform_do_upgrade() {
 	yuncore,ax835)
 		default_do_upgrade "$1"
 		;;
+	cmcc,rax3000m-emmc-ubootlayout|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	glinet,gl-x3000|\
@@ -122,6 +182,10 @@ platform_do_upgrade() {
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
 		emmc_do_upgrade "$1"
+		;;
+	konka,komi-a31)
+		CI_KERNPART="fit"
+		nand_do_upgrade "$1"
 		;;
 	mercusys,mr90x-v1|\
 	tplink,re6000xd)
@@ -157,6 +221,12 @@ platform_do_upgrade() {
 		CI_ROOT_UBIPART=ubi
 		nand_do_upgrade "$1"
 		;;
+	tenbay,wr3000k-gsw-emmc-nor)
+		tenbay_mmc_do_upgrade_dual_boot "$1"
+		;;
+	tenbay,ms3000k)
+		default_do_upgrade "$1"
+		;;
 	*)
 		nand_do_upgrade "$1"
 		;;
@@ -183,6 +253,11 @@ platform_check_image() {
 		}
 		return 0
 		;;
+	cmcc,rax3000m-emmc-ubootlayout|\
+	tenbay,ms3000k|\
+	tenbay,wr3000k-gsw-emmc-nor)
+		return 0
+		;;
 	*)
 		nand_do_platform_check "$board" "$1"
 		return $?
@@ -205,6 +280,7 @@ platform_copy_config() {
 		;;
 	acer,predator-w6|\
 	arcadyan,mozart|\
+	cmcc,rax3000m-emmc-ubootlayout|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	glinet,gl-x3000|\
@@ -217,6 +293,7 @@ platform_copy_config() {
 	smartrg,sdg-8733|\
 	smartrg,sdg-8733a|\
 	smartrg,sdg-8734|\
+	tenbay,wr3000k-gsw-emmc-nor|\
 	ubnt,unifi-6-plus)
 		emmc_copy_config
 		;;
@@ -237,5 +314,24 @@ platform_pre_upgrade() {
 	xiaomi,redmi-router-ax6000-stock)
 		xiaomi_initial_setup
 		;;
+	cmcc,mr3000d-ciq-256m|\
+	tenbay,ac-2210e|\
+	tenbay,ac-2205ex|\
+	tenbay,wr3000k)
+		tenbay_dualboot_fixup
+		;;
 	esac
+
+	if ! [ "$(rootfs_type)" = "tmpfs" ]; then
+		bootcmd=$(fw_printenv -n bootcmd)
+		if [ "$bootcmd" = "run boot_ubi || run boot_recovery" ]; then
+			fw_setenv bootcmd "if pstore check ; then run boot_recovery ; else run boot_ubi ; fi"
+		elif [ "$bootcmd" = "run boot_emmc || run boot_recovery" ]; then
+			fw_setenv bootcmd "if pstore check ; then run boot_recovery ; else run boot_emmc ; fi"
+		elif [ "$bootcmd" = "run boot_sdmmc || run boot_recovery" ]; then
+			fw_setenv bootcmd "if pstore check ; then run boot_recovery ; else run boot_sdmmc ; fi"
+		elif [ "$bootcmd" = "run boot_nor || run boot_recovery" ]; then
+			fw_setenv bootcmd "if pstore check ; then run boot_recovery ; else run boot_nor ; fi"
+		fi
+	fi
 }

@@ -29,12 +29,12 @@
 	ports {
 		port@0 {
 			status = "okay";
-			label = "eth0";
+			label = "rename_eth0";
 		};
 
 		port@1 {
 			status = "okay";
-			label = "eth1";
+			label = "rename_eth1";
 			nvmem-cells = <&macaddr_factory_22 1>;
 			nvmem-cell-names = "mac-address";
 		};
@@ -100,8 +100,13 @@
 		};
 
 		partition@140000 {
-			label = "kernel";
-			reg = <0x140000 0x600000>;
+			label = "kernel1";
+			reg = <0x140000 0x300000>;
+		};
+
+		partition@440000 {
+			label = "kernel2";
+			reg = <0x440000 0x300000>;
 		};
 
 		partition@740000 {
